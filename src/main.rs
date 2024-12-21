@@ -2,7 +2,7 @@ use clap::Parser;
 use std::thread::sleep;
 use std::time::Duration;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
 struct Args {
     /// Run in foreground
@@ -34,12 +34,12 @@ struct Args {
     interfaces: Vec<String>,
 }
 
-struct Monitor<'a> {
-    args: &'a Args,
+struct Monitor{
+    args: Args,
 }
 
-impl<'a> Monitor<'a> {
-    fn new(args: &'a Args) -> Self {
+impl Monitor {
+    fn new(args: Args) -> Self {
         Self { args }
     }
 
@@ -62,7 +62,8 @@ impl<'a> Monitor<'a> {
 
 fn main() {
     let args = Args::parse();
-    let mut monitor = Monitor::new(&args);
+    // let mut monitor = Monitor::new(&args);
+    let mut monitor = Monitor::new(args.clone());
 
     if args.interfaces.is_empty() {
         eprintln!("No interfaces to monitor");
