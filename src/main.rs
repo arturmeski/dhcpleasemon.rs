@@ -7,6 +7,7 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+use daemonize::Daemonize;
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -55,8 +56,6 @@ impl Monitor {
 
     /// Was the file modified since the last check?
     fn check_file_modified(&mut self, lease_file_path: &str) -> bool {
-        println!("Checking: file {}", lease_file_path);
-
         let metadata = fs::metadata(&lease_file_path);
         let current_timestamp = metadata
             .expect("Unsupported platform")
@@ -80,12 +79,13 @@ impl Monitor {
         false
     }
 
-    /// Generates the lease file path
+    /// Generates the lease file path for a given interface
     fn get_lease_file_path(&self, iface_name: &str) -> String {
         let dhcp_lease_dir = &self.args.dhcp_lease_dir;
         format!("{dhcp_lease_dir}/{iface_name}")
     }
 
+    /// Generates the trigger script path for a given interface
     fn get_trigger_script_path(&self, iface_name: &str) -> String {
         let trigger_scripts_path = &self.args.scripts_dir;
         format!("{trigger_scripts_path}/lease_trigger_{iface_name}")
@@ -118,7 +118,6 @@ impl Monitor {
                 let route_dest = cols[0];
                 if route_iface == iface_name && route_dest == "default" {
                     let route_ip = cols[1];
-                    println!("{} {}", route_dest, route_ip);
                     return Some(route_ip.to_string());
                 }
             }
@@ -153,10 +152,6 @@ impl Monitor {
             .unwrap_or(String::from(""));
 
         let trigger_script_path = self.get_trigger_script_path(iface_name);
-        println!(
-            "EXEC: {} {} -> script |{}| IP: {:?} Route: {}",
-            iface_name, lease_file_path, trigger_script_path, lease_ip_addr, default_route
-        );
 
         let output = Command::new(trigger_script_path)
             .env("DHCP_IFACE", iface_name)
@@ -176,13 +171,10 @@ impl Monitor {
             for iface_name in self.args.interfaces.clone() {
                 let lease_file_path = self.get_lease_file_path(&iface_name);
                 if self.check_file_modified(&lease_file_path) {
-                    println!("Was modified!");
                     self.trigger_script(&iface_name, &lease_file_path);
                 }
             }
             sleep(Duration::new(self.args.interval.into(), 0));
-            println!("{:?}", self.args);
-            println!("hello");
         }
     }
 }
@@ -193,6 +185,17 @@ fn main() {
 
     if args.interfaces.is_empty() {
         panic!("No interfaces to monitor");
+    }
+
+    let daemonize = Daemonize::new()
+        .pid_file(&args.pid_file);
+
+    match daemonize.start() {
+        Ok(_) => {},
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return;
+        },
     }
 
     monitor.run();
