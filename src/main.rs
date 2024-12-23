@@ -1,4 +1,5 @@
 use clap::Parser;
+use daemonize::Daemonize;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
@@ -7,7 +8,6 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use daemonize::Daemonize;
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -41,9 +41,17 @@ struct Args {
     interfaces: Vec<String>,
 }
 
+#[derive(PartialEq)]
+struct LeaseParams {
+    iface_name: String,
+    ip_addr: String,
+    route_addr: String,
+}
+
 struct Monitor {
     args: Args,
     timestamps: HashMap<String, SystemTime>,
+    lease_params: HashMap<String, LeaseParams>,
 }
 
 impl Monitor {
@@ -51,6 +59,7 @@ impl Monitor {
         Self {
             args,
             timestamps: HashMap::new(),
+            lease_params: HashMap::new(),
         }
     }
 
@@ -142,16 +151,11 @@ impl Monitor {
     }
 
     /// Execute the trigger script
-    fn trigger_script(&mut self, iface_name: &str, lease_file_path: &str) {
-
-        let default_route = self
-            .get_default_route(iface_name)
-            .unwrap_or(String::from(""));
-        let lease_ip_addr = self
-            .get_lease_ip_addr(lease_file_path)
-            .unwrap_or(String::from(""));
-
-        let trigger_script_path = self.get_trigger_script_path(iface_name);
+    fn run_trigger_script(&mut self, lease_params: &LeaseParams) -> () {
+        let iface_name = lease_params.iface_name.to_owned();
+        let default_route = lease_params.route_addr.to_owned();
+        let lease_ip_addr = lease_params.ip_addr.to_owned();
+        let trigger_script_path = self.get_trigger_script_path(&iface_name);
 
         let output = Command::new(trigger_script_path)
             .env("DHCP_IFACE", iface_name)
@@ -161,7 +165,24 @@ impl Monitor {
             .expect("Failed to execute trigger script");
 
         if !output.status.success() {
-            println!("Trigger script execution was unsuccessful: {}", output.status.to_string());
+            println!(
+                "Trigger script execution was unsuccessful: {}",
+                output.status.to_string()
+            );
+        }
+    }
+
+    /// Gathers all params related to the lease associated with an interface
+    fn get_actual_lease_params(&self, iface_name: &str) -> LeaseParams {
+        let lease_file_path = self.get_lease_file_path(&iface_name);
+        LeaseParams {
+            iface_name: iface_name.to_string(),
+            ip_addr: self
+                .get_lease_ip_addr(&lease_file_path)
+                .unwrap_or(String::from("")),
+            route_addr: self
+                .get_default_route(&iface_name)
+                .unwrap_or(String::from("")),
         }
     }
 
@@ -171,7 +192,24 @@ impl Monitor {
             for iface_name in self.args.interfaces.clone() {
                 let lease_file_path = self.get_lease_file_path(&iface_name);
                 if self.check_file_modified(&lease_file_path) {
-                    self.trigger_script(&iface_name, &lease_file_path);
+                    let lease_params = self.get_actual_lease_params(&iface_name);
+
+                    let trigger = match self.lease_params.get(&iface_name) {
+                        Some(current_lease_params) => {
+                            if *current_lease_params != lease_params {
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        None => false,
+                    };
+
+                    if trigger {
+                        self.run_trigger_script(&lease_params);
+                        self.lease_params
+                            .insert(iface_name.to_owned(), lease_params);
+                    }
                 }
             }
             sleep(Duration::new(self.args.interval.into(), 0));
@@ -187,15 +225,14 @@ fn main() {
         panic!("No interfaces to monitor");
     }
 
-    let daemonize = Daemonize::new()
-        .pid_file(&args.pid_file);
+    let daemonize = Daemonize::new().pid_file(&args.pid_file);
 
     match daemonize.start() {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => {
             eprintln!("Error: {}", e);
             return;
-        },
+        }
     }
 
     monitor.run();
