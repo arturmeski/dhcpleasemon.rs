@@ -6,8 +6,7 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::process::Command;
 use std::thread::sleep;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -39,9 +38,13 @@ struct Args {
     /// Interfaces to monitor
     #[arg(short, long)]
     interfaces: Vec<String>,
+
+    /// Verbosity
+    #[arg(short, long)]
+    verbosity: bool,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 struct LeaseParams {
     iface_name: String,
     ip_addr: String,
@@ -157,6 +160,10 @@ impl Monitor {
         let lease_ip_addr = lease_params.ip_addr.to_owned();
         let trigger_script_path = self.get_trigger_script_path(&iface_name);
 
+        if self.verbosity() {
+            println!("Triggered: {:?}", lease_params);
+        }
+
         let output = Command::new(trigger_script_path)
             .env("DHCP_IFACE", iface_name)
             .env("DHCP_IP_ADDR", lease_ip_addr)
@@ -190,6 +197,9 @@ impl Monitor {
     fn run(&mut self) {
         loop {
             for iface_name in self.args.interfaces.clone() {
+                if self.verbosity() {
+                    println!("Checking: {}", iface_name);
+                }
                 let lease_file_path = self.get_lease_file_path(&iface_name);
                 if self.check_file_modified(&lease_file_path) {
                     let lease_params = self.get_actual_lease_params(&iface_name);
@@ -199,21 +209,35 @@ impl Monitor {
                             if *current_lease_params != lease_params {
                                 true
                             } else {
+                                if self.verbosity() {
+                                    println!("Lease params unchanged: {:?}", lease_params);
+                                }
                                 false
                             }
                         }
-                        None => false,
+                        None => true,
                     };
 
                     if trigger {
+                        if self.verbosity() {
+                            println!("Triggered: {:?}", lease_params);
+                        }
                         self.run_trigger_script(&lease_params);
                         self.lease_params
                             .insert(iface_name.to_owned(), lease_params);
+                    }
+                } else {
+                    if self.verbosity() {
+                        println!("File not modified for {}", iface_name);
                     }
                 }
             }
             sleep(Duration::new(self.args.interval.into(), 0));
         }
+    }
+
+    fn verbosity(&self) -> bool {
+        self.args.verbosity
     }
 }
 
@@ -225,13 +249,15 @@ fn main() {
         panic!("No interfaces to monitor");
     }
 
-    let daemonize = Daemonize::new().pid_file(&args.pid_file);
+    if !args.foreground {
+        let daemonize = Daemonize::new().pid_file(&args.pid_file);
 
-    match daemonize.start() {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            return;
+        match daemonize.start() {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return;
+            }
         }
     }
 
